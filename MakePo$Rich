@@ -1,0 +1,107 @@
+# Key Candle Strategy Bot with Trade Execution via TradeLocker API (Apple Silicon Compatible)
+# Tracks 1:25 AM and 9:25 AM candles for breakout + re-entry on US30 and executes trades
+
+import datetime
+import time
+import pytz
+from tradelocker import TLAPI
+
+# === CONFIGURATION ===
+TIMEZONE = pytz.timezone("America/New_York")
+SYMBOL = "US30"
+TRACKED_TIMES = [(1, 25), (9, 25)]  # EST key times
+LOT_SIZE = 0.01
+MAX_TRADES_PER_SESSION = 3
+ENVIRONMENT = "https://live.tradelocker.com"  # Updated for LIVE mode
+USERNAME = "donovonnyoung@gmail.com"
+PASSWORD = "GRo_7gk!"
+SERVER = "osp-live"
+
+# === INITIALIZE TRADELOCKER API ===
+tl = TLAPI(
+    environment=ENVIRONMENT,
+    username=USERNAME,
+    password=PASSWORD,
+    server=SERVER
+)
+
+instrument_id = tl.get_instrument_id(SYMBOL)
+
+# === STRATEGY STATE ===
+candle_data = {}
+confirmed_breakouts = {}
+trade_count = 0
+
+# === CORE LOGIC ===
+def get_live_price():
+    ticker = tl.get_ticker(instrument_id)
+    return ticker['ask']  # use ask price for entry
+
+
+def check_key_candle():
+    now = datetime.datetime.now(TIMEZONE)
+    for hour, minute in TRACKED_TIMES:
+        key = f"{hour:02d}:{minute:02d}"
+        if now.hour == hour and now.minute == minute:
+            high = get_live_price()
+            low = high - 30  # placeholder range, could use historical OHLC
+            candle_data[key] = {"high": high, "low": low, "time": now, "history": []}
+            confirmed_breakouts[key] = False
+            print(f"[{SYMBOL}] Saved {key} candle: High={high:.2f}, Low={low:.2f}")
+
+
+def track_price_and_trade():
+    global trade_count
+    if trade_count >= MAX_TRADES_PER_SESSION:
+        return
+
+    price = get_live_price()
+    now = datetime.datetime.now(TIMEZONE)
+    for key in candle_data:
+        data = candle_data[key]
+        data['history'].append(price)
+
+        # Confirm breakout
+        if len(data['history']) >= 2 and not confirmed_breakouts[key]:
+            if data['history'][-2] > data['high'] and data['history'][-1] > data['high']:
+                confirmed_breakouts[key] = 'HIGH'
+                print(f"\n🚀 Breakout above {key} confirmed | Price={price:.2f}")
+            elif data['history'][-2] < data['low'] and data['history'][-1] < data['low']:
+                confirmed_breakouts[key] = 'LOW'
+                print(f"\n🔥 Breakout below {key} confirmed | Price={price:.2f}")
+
+        # Re-entry trigger + TRADE EXECUTION
+        if confirmed_breakouts[key] == 'HIGH' and data['low'] < price < data['high']:
+            print(f"🔄 Re-entry BUY detected | {SYMBOL} | Price={price:.2f}")
+            tl.create_order(
+                instrument_id=instrument_id,
+                quantity=LOT_SIZE,
+                side="buy",
+                type_="market"
+            )
+            confirmed_breakouts[key] = 'DONE'
+            trade_count += 1
+
+        elif confirmed_breakouts[key] == 'LOW' and data['low'] < price < data['high']:
+            print(f"🔁 Re-entry SELL detected | {SYMBOL} | Price={price:.2f}")
+            tl.create_order(
+                instrument_id=instrument_id,
+                quantity=LOT_SIZE,
+                side="sell",
+                type_="market"
+            )
+            confirmed_breakouts[key] = 'DONE'
+            trade_count += 1
+
+
+# === MAIN LOOP ===
+if __name__ == "__main__":
+    print(f"Starting Key Candle Bot for {SYMBOL} with TradeLocker Execution (LIVE Mode)\n")
+    while True:
+        try:
+            check_key_candle()
+            track_price_and_trade()
+            time.sleep(60)
+        except KeyboardInterrupt:
+            print("\nBot stopped.")
+            break
